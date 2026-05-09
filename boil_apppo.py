@@ -211,15 +211,14 @@ class BOiLApp(ctk.CTk):
                          ("Zablokuj → O2", "1"), ("Zablokuj → O3", "2")]:
             color = C_RED if val != "brak" else C_TEXT
             ctk.CTkRadioButton(self.sidebar, text=lbl, variable=self.block_var,
-                   value=val, text_color=color,
-                   fg_color=C_RED if val != "brak" else C_ACCENT, # POPRAWIONE
-                   hover_color="#3a1515" if val != "brak" else C_ACCENT
-                   ).pack(anchor="w", padx=20, pady=3)
+                               value=val, text_color=color,
+                               hover_color="#3a1515" if val != "brak" else C_ACCENT
+                               ).pack(anchor="w", padx=20, pady=3)
         sep()
 
         # Przyciski
         btn = dict(height=42, corner_radius=8, font=("Arial", 12, "bold"))
-        ctk.CTkButton(self.sidebar, text="📂  Wczytaj dane z notatek",
+        ctk.CTkButton(self.sidebar, text="📂  Wczytaj gotowy przykład",
                       command=self._load_example,
                       fg_color="#252f4a", hover_color="#2e3d60",
                       text_color=C_GOLD, **btn).pack(fill="x", padx=15, pady=4)
@@ -235,20 +234,6 @@ class BOiLApp(ctk.CTk):
                       text_color=C_MUTED, border_width=1, border_color="#2a3550",
                       height=36, corner_radius=8).pack(fill="x", padx=15, pady=4)
         sep()
-
-        ctk.CTkLabel(self.sidebar,
-                     text=("Kroki algorytmu:\n"
-                           "① Z_ij = C_j − k_ij^t − k_ij^z\n"
-                           "② Bilansowanie FD\n"
-                           "③ Plan bazowy NW\n"
-                           "④ Zmienne dualne α_i, β_j\n"
-                           "   (α_i + β_j = Z_ij dla tras baz.)\n"
-                           "⑤ Zmienne kryterialne δ_ij\n"
-                           "   (δ_ij = Z_ij − α_i − β_j dla X)\n"
-                           "⑥ Pętla prostokątna → nowy plan\n"
-                           "⑦ Powtarzaj aż δ_ij ≤ 0"),
-                     font=("Courier New", 9), text_color=C_MUTED, justify="left"
-                     ).pack(anchor="w", padx=20, pady=2)
 
     # ── OBSZAR GŁÓWNY ─────────────────────────────────────────────────────────
 
@@ -356,15 +341,16 @@ class BOiLApp(ctk.CTk):
                 [[sell[j] - trans[i][j] - buy[i] for j in range(C0)]
                  for i in range(S0)], dtype=float)
 
-            # 2. Blokowanie trasy do wybranego odbiorcy
-            #    Zgodnie z notatkami: -M wstawiamy TYLKO w wierszach D1/D2.
-            #    Fikcyjny dostawca FD (dodawany przy bilansowaniu) ma tam 0 —
-            #    może więc obsłużyć zablokowanego odbiorcę, co gwarantuje
-            #    że wynik nie zmienia się względem wariantu bez blokady.
+            # 2. Blokowanie trasy odbiorcy
+            #    Zgodnie z notatkami: -M wstawiamy TYLKO w jednej komórce —
+            #    w wierszu FD (fikcyjny dostawca) przy zablokowanym odbiorcy.
+            #    D1 i D2 pozostają bez zmian. Dzięki temu FD nie może obsłużyć
+            #    zablokowanego odbiorcy, ale D1/D2 mogą — obliczenia są standardowe,
+            #    a wynik zależy tylko od tego czy FD miał alokację w tej kolumnie.
             blk = self.block_var.get()
-            blocked_col = int(blk) if blk != "brak" else None  # indeks 0/1/2 lub None
+            blocked_col = int(blk) if blk != "brak" else None
 
-            # 3. Bilansowanie — zawsze przez FD (zgodnie z notatkami)
+            # 3. Bilansowanie — zawsze przez FD
             sum_s = sum(supply_orig)
             sum_d = sum(demand_orig)
             supply = list(supply_orig)
@@ -372,21 +358,20 @@ class BOiLApp(ctk.CTk):
             row_names = ["D1", "D2"]
             col_names = [f"O{j+1}" for j in range(C0)]
 
-            # Macierz z karą: -M tylko dla D1/D2, FD dostanie 0
             z_pen = z_orig.copy()
-            if blocked_col is not None:
-                z_pen[:, blocked_col] = -M_BIG  # wiersze D1/D2
 
             if sum_d >= sum_s:
-                # Podaż FD = różnica; FD ma 0 dla wszystkich odbiorców (nie blokujemy FD!)
                 fd_supply = sum_d - sum_s
                 supply.append(fd_supply)
-                fd_row = np.zeros((1, C0))          # Z_FD,j = 0 dla każdego j
+                fd_row = np.zeros((1, C0))
                 z_pen  = np.vstack([z_pen, fd_row])
                 z_orig = np.vstack([z_orig, fd_row])
                 row_names.append("FD")
+                fd_row_idx = len(supply) - 1
+                # -M TYLKO w komórce FD × zablokowany odbiorca
+                if blocked_col is not None:
+                    z_pen[fd_row_idx, blocked_col] = -M_BIG
             else:
-                # supply > demand — fikcyjny odbiorca (rzadki przypadek)
                 fo_demand = sum_s - sum_d
                 demand.append(fo_demand)
                 z_pen  = np.hstack([z_pen,  np.zeros((len(supply), 1))])
@@ -476,8 +461,8 @@ class BOiLApp(ctk.CTk):
                              ).grid(row=i+row_off+1, column=0, padx=1, pady=1)
 
             for j in range(len(cols)):
-                # Zablokowana komórka: tylko D1/D2, nie FD
-                is_blocked = (blocked_col is not None and j == blocked_col and not is_fd)
+                # -M tylko w wierszu FD przy zablokowanej kolumnie
+                is_blocked = (blocked_col is not None and j == blocked_col and is_fd)
                 is_pivot   = (pivot == (i, j))
                 has_alloc  = (alloc is not None and alloc[i, j] > 0)
 
@@ -519,8 +504,8 @@ class BOiLApp(ctk.CTk):
         if blocked_col is not None:
             ctk.CTkLabel(
                 card,
-                text=(f"⚠  Trasa do O{blocked_col+1} zablokowana dla D1/D2  →  Z = −M "
-                      f"(FD może nadal obsłużyć O{blocked_col+1} przy Z = 0)"),
+                text=(f"⚠  Trasa zablokowana do O{blocked_col+1}  →  Z[FD, O{blocked_col+1}] = −M  "
+                      f"(D1/D2 mogą nadal dostarczać do O{blocked_col+1} bez zmian)"),
                 font=("Arial", 10), text_color=C_RED
             ).pack(pady=(0, 10))
 
@@ -622,8 +607,8 @@ class BOiLApp(ctk.CTk):
         if blocked_col is not None:
             ctk.CTkLabel(
                 card,
-                text=(f"ℹ  Trasa do O{blocked_col+1} zablokowana dla D1/D2. "
-                      f"FD obsługuje O{blocked_col+1} przy zysku jednostkowym = 0."),
+                text=(f"ℹ  Trasa zablokowana do O{blocked_col+1}: "
+                      f"Z[FD, O{blocked_col+1}] = −M, pozostałe komórki kolumny bez zmian."),
                 font=("Arial", 10), text_color=C_MUTED
             ).pack(anchor="w", padx=16, pady=(0, 12))
 
