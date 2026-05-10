@@ -34,7 +34,7 @@ M_BIG     = 99999  # kara za zablokowaną trasę (wstawiana tylko w wierszach D1
 # ─── ALGORYTM ────────────────────────────────────────────────────────────────
 
 def nw_corner(supply, demand):
-    """Metoda wierzchołka północno-zachodniego."""
+    """Metoda wierzchołka północno-zachodniego (używana pomocniczo)."""
     S, C = len(supply), len(demand)
     alloc = np.zeros((S, C))
     s, d = list(supply), list(demand)
@@ -48,6 +48,56 @@ def nw_corner(supply, demand):
             i += 1
         if d[j] == 0:
             j += 1
+    return alloc
+
+
+def max_element(z_matrix, supply, demand):
+    """
+    Metoda maksymalnego elementu macierzy zysków.
+    Zgodnie z notatkami: przydzielamy ile możemy na trasie z największym Z_ij.
+    """
+    S, C = len(supply), len(demand)
+    alloc = np.zeros((S, C))
+    s, d = list(supply), list(demand)
+    z = z_matrix.copy().astype(float)
+    while True:
+        best_val, best_i, best_j = -np.inf, -1, -1
+        for i in range(S):
+            for j in range(C):
+                if s[i] > 0 and d[j] > 0 and z[i, j] > best_val:
+                    best_val, best_i, best_j = z[i, j], i, j
+        if best_i == -1:
+            break
+        val = min(s[best_i], d[best_j])
+        alloc[best_i, best_j] = val
+        s[best_i] -= val
+        d[best_j] -= val
+    return alloc
+
+
+def repair_forbidden(alloc, forbidden_cell):
+    """
+    Jeśli zablokowana komórka ma alokację z planu bazowego,
+    wysuwa ją z bazy przez pętlę prostokątną zanim ruszy MODI.
+    """
+    fi, fj = forbidden_cell
+    if alloc[fi, fj] == 0:
+        return alloc
+    S, C = alloc.shape
+    for i in range(S):
+        for j in range(C):
+            if alloc[i, j] == 0 and (i, j) != (fi, fj):
+                lp = find_loop(alloc, i, j)
+                if lp and (fi, fj) in [lp[k] for k in range(1, len(lp), 2)]:
+                    minus = [lp[k] for k in range(1, len(lp), 2)]
+                    theta = min(alloc[ii, jj] for ii, jj in minus)
+                    new = alloc.copy()
+                    for k, (ii, jj) in enumerate(lp):
+                        if k % 2 == 0:
+                            new[ii, jj] += theta
+                        else:
+                            new[ii, jj] -= theta
+                    return new
     return alloc
 
 
@@ -77,6 +127,32 @@ def find_loop(alloc, pivot_i, pivot_j):
         return None
 
     return dfs([(pivot_i, pivot_j)], 'row') or dfs([(pivot_i, pivot_j)], 'col')
+
+
+def repair_forbidden(alloc, forbidden_cell):
+    """
+    Jeśli zablokowana komórka ma alokację z NW corner,
+    wykonuje jeden pivot żeby ją wyzerować przed startem MODI.
+    """
+    fi, fj = forbidden_cell
+    if alloc[fi, fj] == 0:
+        return alloc
+    S, C = alloc.shape
+    for i in range(S):
+        for j in range(C):
+            if alloc[i, j] == 0:
+                lp = find_loop(alloc, i, j)
+                if lp and (fi, fj) in [lp[k] for k in range(1, len(lp), 2)]:
+                    minus = [lp[k] for k in range(1, len(lp), 2)]
+                    theta = min(alloc[ii, jj] for ii, jj in minus)
+                    new = alloc.copy()
+                    for k, (ii, jj) in enumerate(lp):
+                        if k % 2 == 0:
+                            new[ii, jj] += theta
+                        else:
+                            new[ii, jj] -= theta
+                    return new
+    return alloc
 
 
 def modi_optimize(z_matrix, alloc_init):
@@ -208,17 +284,16 @@ class BOiLApp(ctk.CTk):
 
         self.block_var = ctk.StringVar(value="brak")
         for lbl, val in [("Brak blokady", "brak"), ("Zablokuj → O1", "0"),
-                         ("Zablokuj → O2", "1"), ("Zablokuj → O3", "2")]:
+                 ("Zablokuj → O2", "1"), ("Zablokuj → O3", "2")]:
             color = C_RED if val != "brak" else C_TEXT
             ctk.CTkRadioButton(self.sidebar, text=lbl, variable=self.block_var,
-                               value=val, text_color=color,
-                               hover_color="#3a1515" if val != "brak" else C_ACCENT
-                               ).pack(anchor="w", padx=20, pady=3)
+                       value=val, text_color=color
+                       ).pack(anchor="w", padx=20, pady=3)
         sep()
 
         # Przyciski
         btn = dict(height=42, corner_radius=8, font=("Arial", 12, "bold"))
-        ctk.CTkButton(self.sidebar, text="📂  Wczytaj gotowy przykład",
+        ctk.CTkButton(self.sidebar, text="📂  Wczytaj dane z notatek",
                       command=self._load_example,
                       fg_color="#252f4a", hover_color="#2e3d60",
                       text_color=C_GOLD, **btn).pack(fill="x", padx=15, pady=4)
@@ -234,6 +309,21 @@ class BOiLApp(ctk.CTk):
                       text_color=C_MUTED, border_width=1, border_color="#2a3550",
                       height=36, corner_radius=8).pack(fill="x", padx=15, pady=4)
         sep()
+
+        ctk.CTkLabel(self.sidebar,
+                     text=("Kroki algorytmu:\n"
+                           "① Z_ij = C_j − k_ij^t − k_ij^z\n"
+                           "② Bilansowanie: FD (podaż=Σpopyt)\n"
+                           "   + FO (popyt=Σpodaż)\n"
+                           "③ Plan bazowy: max. element\n"
+                           "④ Zmienne dualne α_i, β_j\n"
+                           "   (α_i + β_j = Z_ij dla tras baz.)\n"
+                           "⑤ Zmienne kryterialne δ_ij\n"
+                           "   (δ_ij = Z_ij − α_i − β_j dla X)\n"
+                           "⑥ Pętla prostokątna → nowy plan\n"
+                           "⑦ Powtarzaj aż δ_ij ≤ 0"),
+                     font=("Courier New", 9), text_color=C_MUTED, justify="left"
+                     ).pack(anchor="w", padx=20, pady=2)
 
     # ── OBSZAR GŁÓWNY ─────────────────────────────────────────────────────────
 
@@ -341,54 +431,47 @@ class BOiLApp(ctk.CTk):
                 [[sell[j] - trans[i][j] - buy[i] for j in range(C0)]
                  for i in range(S0)], dtype=float)
 
-            # 2. Blokowanie trasy odbiorcy
-            #    Zgodnie z notatkami: -M wstawiamy TYLKO w jednej komórce —
-            #    w wierszu FD (fikcyjny dostawca) przy zablokowanym odbiorcy.
-            #    D1 i D2 pozostają bez zmian. Dzięki temu FD nie może obsłużyć
-            #    zablokowanego odbiorcy, ale D1/D2 mogą — obliczenia są standardowe,
-            #    a wynik zależy tylko od tego czy FD miał alokację w tej kolumnie.
+            # 2. Blokowanie
             blk = self.block_var.get()
             blocked_col = int(blk) if blk != "brak" else None
 
-            # 3. Bilansowanie — zawsze przez FD
+            # 3. Bilansowanie — ZAWSZE dodajemy FD i FO
+            #    FD: podaż = suma popytu (całkowita)
+            #    FO: popyt = suma podaży (całkowita)
             sum_s = sum(supply_orig)
             sum_d = sum(demand_orig)
-            supply = list(supply_orig)
-            demand = list(demand_orig)
-            row_names = ["D1", "D2"]
-            col_names = [f"O{j+1}" for j in range(C0)]
 
-            z_pen = z_orig.copy()
+            supply = list(supply_orig) + [sum_d]   # FD ma podaż = suma popytu
+            demand = list(demand_orig) + [sum_s]   # FO ma popyt = suma podaży
+            row_names = ["D1", "D2", "FD"]
+            col_names = ["O1", "O2", "O3", "FO"]
 
-            if sum_d >= sum_s:
-                fd_supply = sum_d - sum_s
-                supply.append(fd_supply)
-                fd_row = np.zeros((1, C0))
-                z_pen  = np.vstack([z_pen, fd_row])
-                z_orig = np.vstack([z_orig, fd_row])
-                row_names.append("FD")
-                fd_row_idx = len(supply) - 1
-                # -M TYLKO w komórce FD × zablokowany odbiorca
-                if blocked_col is not None:
-                    z_pen[fd_row_idx, blocked_col] = -M_BIG
-            else:
-                fo_demand = sum_s - sum_d
-                demand.append(fo_demand)
-                z_pen  = np.hstack([z_pen,  np.zeros((len(supply), 1))])
-                z_orig = np.hstack([z_orig, np.zeros((len(supply), 1))])
-                col_names.append("FO")
+            # Z matrix 3x4: FD wiersz = zera, FO kolumna = zera
+            z_pen = np.hstack([z_orig, np.zeros((S0, 1))])          # dodaj kolumnę FO
+            z_pen = np.vstack([z_pen,  np.zeros((1, C0 + 1))])      # dodaj wiersz FD
+            z_orig_full = z_pen.copy()
 
-            # 4. Plan bazowy: metoda wierzchołka NW
-            alloc0 = nw_corner(supply, demand)
+            fd_row_idx = S0  # indeks wiersza FD = 2
+
+            # -M TYLKO w komórce FD × zablokowany odbiorca
+            if blocked_col is not None:
+                z_pen[fd_row_idx, blocked_col] = -M_BIG
+
+            # 4. Plan bazowy: metoda maksymalnego elementu macierzy
+            alloc0 = max_element(z_pen, supply, demand)
+
+            # Jeśli zablokowana komórka dostała alokację, wyzeruj ją przed MODI
+            if blocked_col is not None:
+                alloc0 = repair_forbidden(alloc0, (fd_row_idx, blocked_col))
 
             # 5. Optymalizacja MODI
             iterations = modi_optimize(z_pen, alloc0)
 
             # 6. Wyświetlenie
             self._clear_results()
-            self._show_z_matrix(z_orig, z_pen, row_names, col_names, blocked_col)
-            self._show_iterations(iterations, z_orig, z_pen, row_names, col_names, blocked_col)
-            self._show_summary(iterations, z_orig, row_names, col_names,
+            self._show_z_matrix(z_orig_full, z_pen, row_names, col_names, blocked_col)
+            self._show_iterations(iterations, z_orig_full, z_pen, row_names, col_names, blocked_col)
+            self._show_summary(iterations, z_orig_full, row_names, col_names,
                                sell, trans, buy, blocked_col)
 
         except Exception as e:
@@ -520,7 +603,7 @@ class BOiLApp(ctk.CTk):
             delta, pivot = it['delta'],     it['pivot']
             is_opt       = it['is_optimal']
 
-            subtitle = "Plan bazowy (wierzchołek NW)" if num == 1 else "Po zmianie planu (pętla prostokątna)"
+            subtitle = "Plan bazowy (max. element macierzy)" if num == 1 else "Po zmianie planu (pętla prostokątna)"
             if is_opt:
                 status, sc = "✔  PLAN OPTYMALNY — wszystkie δ_ij ≤ 0", C_GREEN
             else:
